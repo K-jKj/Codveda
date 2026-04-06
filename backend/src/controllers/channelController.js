@@ -2,11 +2,12 @@ import Channel from "../models/channelModel.js";
 import Course from "../models/courseModel.js";
 import Message from "../models/messageModel.js";
 import Enrollment from "../models/enrollmentModel.js"
+import Submission from "../models/submissionModel.js";
 
 export const createChannel = async(req,res)=> {
     try{
         const {courseId} = req.params;
-        const {name, description,requiresJoinApproval, isLocked} = req.body;
+        const {name, description,requiresJoinApproval, isLocked, type} = req.body;
     
         if(!name) {
             return res.status(400).json({message: "Channel Name is required"});
@@ -27,7 +28,7 @@ export const createChannel = async(req,res)=> {
             name, 
             description,
             requiresJoinApproval: requiresJoinApproval || false,
-            type: "chat",
+            type: type || "chat",
             courseId,
             isLocked: isLocked || false,
             members: [req.user._id]
@@ -232,4 +233,137 @@ export const approveJoinRequest = async (req, res) => {
     } catch (error) {
         return res.status(500).json({ message: "Server error", error: error.message });
     }
+};
+
+export const addModule = async (req, res) => {
+  try {
+    const { id } = req.params; 
+    const { title } = req.body;
+
+    const channel = await Channel.findById(id);
+
+    if (!channel || channel.type !== "assessment") {
+      return res.status(400).json({ message: "Not an assessment channel" });
+    }
+
+    channel.assessment.modules.push({
+      title,
+      questions: []
+    });
+
+    await channel.save();
+
+    res.status(200).json({ message: "Module added", channel });
+  } catch (error) {
+    res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
+
+export const addQuestion = async (req, res) => {
+  try {
+    const { id, moduleIndex } = req.params;
+    const { question, options, correctAnswer } = req.body;
+
+    const channel = await Channel.findById(id);
+
+    if (!channel || channel.type !== "assessment") {
+      return res.status(400).json({ message: "Not an assessment channel" });
+    }
+
+    const module = channel.assessment.modules[moduleIndex];
+
+    if (!module) {
+      return res.status(404).json({ message: "Module not found" });
+    }
+
+    module.questions.push({
+      question,
+      options,
+      correctAnswer
+    });
+
+    await channel.save();
+
+    res.status(200).json({ message: "Question added", channel });
+  } catch (error) {
+    res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
+
+
+
+export const submitAssessment = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { answers } = req.body;
+    const userId = req.user._id;
+
+    const channel = await Channel.findById(id);
+    if (!channel || channel.type !== "assessment") {
+      return res.status(400).json({ message: "Invalid assessment channel" });
+    }
+
+    let correctCount = 0;
+    let totalQuestions = 0;
+
+    const gradedAnswers = channel.assessment.modules.flatMap((mod) =>
+      mod.questions.map((q) => {
+        totalQuestions++;
+        const userAnswer = answers.find(a => a.questionId === q._id.toString());
+        const isCorrect = userAnswer && Number(userAnswer.selectedOption) === q.correctAnswer;
+        
+        if (isCorrect) correctCount++;
+
+        return {
+          questionId: q._id,
+          selectedOption: userAnswer ? userAnswer.selectedOption : null,
+          pointsAwarded: isCorrect ? 1 : 0
+        };
+      })
+    );
+
+    
+    const finalScore = totalQuestions > 0 ? (correctCount / totalQuestions) * 100 : 0;
+    const passed = finalScore >= channel.assessment.passingScore;
+
+    const submission = await Submission.create({
+      user: userId,
+      channel: id,
+      answers: gradedAnswers,
+      score: Math.round(finalScore), 
+      passed
+    });
+
+    return res.status(200).json({ 
+      message: "Assessment submitted", 
+      score: Math.round(finalScore), 
+      passed, 
+      submissionId: submission._id 
+    });
+
+  } catch (error) {
+    return res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
+export const getPastSubmissions = async (req, res) => {
+  try {
+    const { id } = req.params; 
+    const userId = req.user._id;
+
+    const submissions = await Submission.find({ channel: id, user: userId })
+      .sort({ submittedAt: -1 }) 
+      .select("score passed submittedAt answers"); 
+
+    return res.status(200).json({
+      status: "Success",
+      count: submissions.length,
+      data: submissions
+    });
+
+  } catch (error) {
+    return res.status(500).json({ message: "Server error", error: error.message });
+  }
 };

@@ -1,23 +1,40 @@
 import Channel from "../models/channelModel.js";
-
+import Enrollment from "../models/enrollmentModel.js";
 
 export const canPost = async (req, res, next) => {
     try {
         const channel = await Channel.findById(req.params.id);
         if (!channel) return res.status(404).json({ message: "Channel not found" });
 
-        const isInstructorOrAdmin = req.user.role === "admin" || req.user.role === "instructor";
+        const enrollment = await Enrollment.findOne({
+            user: req.user._id,
+            course: channel.courseId
+        });
 
-        const isMember = channel.members.includes(req.user._id.toString());
+        if (!enrollment) {
+            return res.status(403).json({ 
+                message: "You must be enrolled in this course to post messages." 
+            });
+        }
 
-        if ((channel.isLocked || channel.requiresJoinApproval) && !isMember && !isInstructorOrAdmin) {
+        const isCourseInstructor = enrollment.role === "instructor";
+        const isGlobalAdmin = req.user.role === "admin";
+        const isAuthorizedStaff = isCourseInstructor || isGlobalAdmin;
+
+        const isMember = channel.members.some(m => m.toString() === req.user._id.toString());
+
+        if ((channel.isLocked || channel.requiresJoinApproval) && !isMember && !isAuthorizedStaff) {
             return res.status(403).json({ 
                 message: "You are not an authorized member of this channel." 
             });
         }
 
-        if(channel.type === "announcement" && !isInstructorOrAdmin){
-            return res.status(403).json({message: "Only instructors can post in announcements"});
+        const restrictedTypes = ["announcement", "resources"];
+        
+        if (restrictedTypes.includes(channel.type) && !isAuthorizedStaff) {
+            return res.status(403).json({ 
+                message: `Only the course instructor can post in ${channel.type} channels.` 
+            });
         }
 
         req.channel = channel;
